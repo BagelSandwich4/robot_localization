@@ -14,6 +14,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, Pose, Point, Quaternion
 from rclpy.duration import Duration
 import math
 import time
+import random
 import numpy as np
 from occupancy_field import OccupancyField
 from helper_functions import TFHelper
@@ -212,7 +213,22 @@ class ParticleFilter(Node):
             self.current_odom_xy_theta = new_odom_xy_theta
             return
 
-        # TODO: modify particles using delta
+        # TODO: modify particles using delta, DONE
+        """
+        Rotate to particles pose: 
+        d_forward = Δx cos θ₁ + Δy sin θ₁ and
+        d_lateral = -Δx sin θ₁ + Δy cos θ₁
+        x becomes x + d_forward cos θ - d_lateral sin θ
+        y becomes y + d_forward sin θ + d_lateral cos θ
+        θ becomes θ + Δθ
+        """
+        for particle in self.particle_cloud:
+            # Convert global odom delta into local robot frame (d_forward, d_lateral)
+            d_forward = delta[0] * math.cos(old_odom_xy_theta[2]) + delta[1] * math.sin(old_odom_xy_theta[2])
+            d_lateral = -1*delta[0] * math.sin(old_odom_xy_theta[2]) + delta[1] * math.cos(old_odom_xy_theta[2])
+            particle.x = particle.x + d_forward*math.cos(particle.theta) - d_lateral*math.sin(particle.theta)
+            particle.y = particle.y + d_forward*math.sin(particle.theta) + d_lateral*math.cos(particle.theta)
+            particle.theta = particle.theta + delta[2]
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -230,7 +246,9 @@ class ParticleFilter(Node):
             theta: the angle relative to the robot frame for each corresponding reading 
         """
         # TODO: implement this
-        pass
+        for particles in self.particle_cloud:
+            pass
+        
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
@@ -246,15 +264,25 @@ class ParticleFilter(Node):
         if xy_theta is None:
             xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         self.particle_cloud = []
-        # TODO create particles
+        # TODO create particles, DONE
+        for _ in range(self.n_particles): 
+            randomParticle = Particle(x=random.gauss(xy_theta[0], 0.1), 
+                                      y=random.gauss(xy_theta[1], 0.1), 
+                                      theta=random.guass(xy_theta[2], 0.2 ), 
+                                      w=1)
+            self.particle_cloud.append(randomParticle)
 
         self.normalize_particles()
         self.update_robot_pose()
 
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
-        # TODO: implement this
-        pass
+        # TODO normalize distribution; DONE
+        sum_w = 0
+        for i in range(self.n_particles):
+            sum_w += self.particle_cloud[i].w
+
+        self.particle_cloud = self.particle_cloud / sum_w
 
     def publish_particles(self, timestamp):
         msg = ParticleCloud()
