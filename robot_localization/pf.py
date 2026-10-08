@@ -184,10 +184,19 @@ class ParticleFilter(Node):
         """
         # first make sure that the particle weights are normalized
         self.normalize_particles()
+        #TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
+        # just to get started we will fix the robot's pose to always be at the origin , DONE
 
-        # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
-        # just to get started we will fix the robot's pose to always be at the origin
-        self.robot_pose = Pose()
+        #weighted average position
+        x = sum(p.w * p.y for p in self.particle_cloud) 
+        y = sum(p.w * p.y for p in self.particle_cloud)
+        #wiehgted ciruclar average for heading, can be directly averaged because of wraparound
+        sin_sum = sum(p.w * math.sin(p.theta) for p in self.particle_cloud)
+        cos_sum = sum(p.w * math.cos(p.theta) for p in self.particle_cloud)
+        theta = math.atan2(sin_sum, cos_sum)
+
+
+        self.robot_pose = Particle(x=x, y=y, theta=theta).as_pose()
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
