@@ -255,8 +255,29 @@ class ParticleFilter(Node):
             theta: the angle relative to the robot frame for each corresponding reading 
         """
         # TODO: implement this
-        for particles in self.particle_cloud:
-            pass
+        sigma = 0.2 # standard deviation sensor/map error (mess with this)
+        n_beams = 20 # number of beams to use (mess with this)
+        nan_penalty = 2.0 #distance for points that are out of the map (mess with this)
+        log_weights = []
+        step = int(1,len(r)//n_beams)
+        for p in self.particle_cloud:
+            sq_error = 0.0
+            for i in range(0, len(r), step):
+                # compute the location of the laser hit in the map frame, if the robot was actually at this pose
+                x_hit = p.x + r[i] * math.cos(p.theta + theta[i])
+                y_hit = p.y + r[i] * math.sin(p.theta + theta[i])
+                # compute the distance to the closest obstacle from that location
+                d = self.occupancy_field.get_closest_obstacle_distance(x_hit, y_hit)
+                if math.isnan(d):
+                    d = nan_penalty 
+                sq_error += d*d
+            #Gaussian likelihood of all beams
+            log_weights.append(-sq_error/(2*sigma** 2))
+        #Subtract max log weight to avoid rounding to 0 then exponentiate to get weights
+        max_lw = max(log_weights)
+        for p, lw in zip(self.particle_cloud, log_weights):
+            p.w = math.exp(lw - max_lw)
+        self.normalize_particles()
         
 
     def update_initial_pose(self, msg):
