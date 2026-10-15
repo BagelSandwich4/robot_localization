@@ -20,6 +20,7 @@ from occupancy_field import OccupancyField
 from helper_functions import TFHelper
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
+from helper_functions import draw_random_sample
 
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
@@ -247,14 +248,25 @@ class ParticleFilter(Node):
         """
         # make sure the distribution is normalized
         self.normalize_particles()
-        # TODO: fill out the rest of the implementation
+        weights = [p.w for p in self.particle_cloud]
+        sampled = draw_random_sample(self.particle_cloud, weights, self.n_particles)
+
+        # Create new particle objects, with a little bit of gaussian noise so there are no duplicates
+        new_cloud = []
+        for p in sampled:
+            # small noise so no duplicates
+            new_cloud.append(Particle(x=p.x + random.gauss(0, 0.02),y=p.y + random.gauss(0, 0.02),theta=p.theta + random.gauss(0, 0.02), w=1.0))
+
+        self.particle_cloud = new_cloud
+        self.normalize_particles()
+        # TODO: fill out the rest of the implementation, DONE
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data
             r: the distance readings to obstacles
             theta: the angle relative to the robot frame for each corresponding reading 
         """
-        # TODO: implement this
+        # TODO: implement this, DONE
         sigma = 0.2 # standard deviation sensor/map error (mess with this)
         n_beams = 20 # number of beams to use (mess with this)
         nan_penalty = 2.0 #distance for points that are out of the map (mess with this)
@@ -298,7 +310,7 @@ class ParticleFilter(Node):
         for _ in range(self.n_particles): 
             randomParticle = Particle(x=random.gauss(xy_theta[0], 0.1), 
                                       y=random.gauss(xy_theta[1], 0.1), 
-                                      theta=random.guass(xy_theta[2], 0.2 ), 
+                                      theta=random.gauss(xy_theta[2], 0.2 ), 
                                       w=1)
             self.particle_cloud.append(randomParticle)
 
