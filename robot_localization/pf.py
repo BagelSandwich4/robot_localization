@@ -324,7 +324,14 @@ class ParticleFilter(Node):
         for i in range(self.n_particles):
             sum_w += self.particle_cloud[i].w
 
-        self.particle_cloud = self.particle_cloud / sum_w
+        # prevents division by 0 in rare case that all particles have a weight of 0 
+        if sum_w <= 0:
+            for p in self.particle_cloud: 
+                p.w = 1.0 / len(self.particle_cloud)
+            return
+
+        for p in self.particle_cloud:
+            p.w = p.w / sum_w
 
     def publish_particles(self, timestamp):
         msg = ParticleCloud()
