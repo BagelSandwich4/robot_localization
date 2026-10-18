@@ -174,7 +174,7 @@ class ParticleFilter(Node):
     def moved_far_enough_to_update(self, new_odom_xy_theta):
         return math.fabs(new_odom_xy_theta[0] - self.current_odom_xy_theta[0]) > self.d_thresh or \
                math.fabs(new_odom_xy_theta[1] - self.current_odom_xy_theta[1]) > self.d_thresh or \
-               math.fabs(new_odom_xy_theta[2] - self.current_odom_xy_theta[2]) > self.a_thresh
+               math.fabs(self.transform_helper.angle_diff(new_odom_xy_theta[2], self.current_odom_xy_theta[2])) > self.a_thresh
 
 
     def update_robot_pose(self):
@@ -188,10 +188,10 @@ class ParticleFilter(Node):
         #TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
         # just to get started we will fix the robot's pose to always be at the origin , DONE
 
-        #weighted average position
-        x = sum(p.w * p.y for p in self.particle_cloud) 
+        # weighted average position
+        x = sum(p.w * p.x for p in self.particle_cloud) 
         y = sum(p.w * p.y for p in self.particle_cloud)
-        #wiehgted ciruclar average for heading, can be directly averaged because of wraparound
+        # weighted ciruclar average for heading, can be directly averaged because of wraparound
         sin_sum = sum(p.w * math.sin(p.theta) for p in self.particle_cloud)
         cos_sum = sum(p.w * math.cos(p.theta) for p in self.particle_cloud)
         theta = math.atan2(sin_sum, cos_sum)
@@ -216,7 +216,7 @@ class ParticleFilter(Node):
             old_odom_xy_theta = self.current_odom_xy_theta
             delta = (new_odom_xy_theta[0] - self.current_odom_xy_theta[0],
                      new_odom_xy_theta[1] - self.current_odom_xy_theta[1],
-                     new_odom_xy_theta[2] - self.current_odom_xy_theta[2])
+                     self.transform_helper.angle_diff(new_odom_xy_theta[2], self.current_odom_xy_theta[2]))
 
             self.current_odom_xy_theta = new_odom_xy_theta
         else:
@@ -234,11 +234,14 @@ class ParticleFilter(Node):
         """
         for particle in self.particle_cloud:
             # Convert global odom delta into local robot frame (d_forward, d_lateral)
+            # Noise added correspond to 1cm, 1cm, and 1 deg respectively for x, y, theta
             d_forward = delta[0] * math.cos(old_odom_xy_theta[2]) + delta[1] * math.sin(old_odom_xy_theta[2])
             d_lateral = -1*delta[0] * math.sin(old_odom_xy_theta[2]) + delta[1] * math.cos(old_odom_xy_theta[2])
+            d_forward += random.gauss(0, 0.1 * abs(d_forward) + 0.01)
+            d_lateral += random.gauss(0, 0.1 * abs(d_lateral) + 0.01)
             particle.x = particle.x + d_forward*math.cos(particle.theta) - d_lateral*math.sin(particle.theta)
             particle.y = particle.y + d_forward*math.sin(particle.theta) + d_lateral*math.cos(particle.theta)
-            particle.theta = particle.theta + delta[2]
+            particle.theta = particle.theta + delta[2] + random.gauss(0, 0.1 * abs(delta[2]) + 0.02)
 
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
@@ -255,7 +258,10 @@ class ParticleFilter(Node):
         new_cloud = []
         for p in sampled:
             # small noise so no duplicates
-            new_cloud.append(Particle(x=p.x + random.gauss(0, 0.02),y=p.y + random.gauss(0, 0.02),theta=p.theta + random.gauss(0, 0.02), w=1.0))
+            new_cloud.append(Particle(x=p.x + random.gauss(0, 0.02),
+                                      y=p.y + random.gauss(0, 0.02),
+                                      theta=p.theta + random.gauss(0, 0.02), 
+                                      w=1.0))
 
         self.particle_cloud = new_cloud
         self.normalize_particles()
@@ -269,12 +275,14 @@ class ParticleFilter(Node):
         # TODO: implement this, DONE
         sigma = 0.2 # standard deviation sensor/map error (mess with this)
         n_beams = 20 # number of beams to use (mess with this)
-        nan_penalty = 2.0 #distance for points that are out of the map (mess with this)
+        nan_penalty = 2.0 # distance for points that are out of the map (mess with this)
         log_weights = []
-        step = int(1,len(r)//n_beams)
+        step = max(1,len(r)//n_beams)
         for p in self.particle_cloud:
             sq_error = 0.0
             for i in range(0, len(r), step):
+                if not math.isfinite(r[i]) or r[i] <= 0.0:
+                    continue
                 # compute the location of the laser hit in the map frame, if the robot was actually at this pose
                 x_hit = p.x + r[i] * math.cos(p.theta + theta[i])
                 y_hit = p.y + r[i] * math.sin(p.theta + theta[i])
@@ -321,7 +329,7 @@ class ParticleFilter(Node):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
         # TODO normalize distribution; DONE
         sum_w = 0
-        for i in range(self.n_particles):
+        for i in range(len(self.particle_cloud)):
             sum_w += self.particle_cloud[i].w
 
         # prevents division by 0 in rare case that all particles have a weight of 0 
