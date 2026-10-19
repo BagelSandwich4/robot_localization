@@ -60,6 +60,7 @@ class ParticleFilter(Node):
             n_particles: the number of particles in the filter
             d_thresh: the amount of linear movement before triggering a filter update
             a_thresh: the amount of angular movement before triggering a filter update
+            n_eff_threshold: the proportion of how many particles contribute to probability distribution before resampling
             pose_listener: a subscriber that listens for new approximate pose estimates (i.e. generated through the rviz GUI)
             particle_pub: a publisher for the particle cloud
             last_scan_timestamp: this is used to keep track of the clock when using bags
@@ -84,6 +85,7 @@ class ParticleFilter(Node):
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
+        self.n_eff_threshold = 0.4      # the proportion of how many particles contribute to probability distribution before resampling
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -156,7 +158,6 @@ class ParticleFilter(Node):
         self.odom_pose = new_pose
         new_odom_xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         print("x: {0}, y: {1}, yaw: {2}".format(*new_odom_xy_theta))
-
         if not self.current_odom_xy_theta:
             self.current_odom_xy_theta = new_odom_xy_theta
         elif not self.particle_cloud:
@@ -167,7 +168,10 @@ class ParticleFilter(Node):
             self.update_particles_with_odom()    # update based on odometry
             self.update_particles_with_laser(r, theta)   # update based on laser scan
             self.update_robot_pose()                # update robot's pose based on particles
-            self.resample_particles()               # resample particles to focus on areas of high density
+            n_eff = self.compute_n_eff()
+            self.get_logger().info(f"Useful particle density:{n_eff:.5f}")  # logs data for plotting later 
+            if n_eff < self.n_eff_threshold:
+                self.resample_particles()               # resample only when particles aren't giving good data
         # publish particles (so things like rviz can see them)
         self.publish_particles(msg.header.stamp)
 
@@ -234,7 +238,7 @@ class ParticleFilter(Node):
         """
         for particle in self.particle_cloud:
             # Convert global odom delta into local robot frame (d_forward, d_lateral)
-            # Noise added correspond to 1cm, 1cm, and 1 deg respectively for x, y, theta
+            # Noise added for x, y, theta
             d_forward = delta[0] * math.cos(old_odom_xy_theta[2]) + delta[1] * math.sin(old_odom_xy_theta[2])
             d_lateral = -1*delta[0] * math.sin(old_odom_xy_theta[2]) + delta[1] * math.cos(old_odom_xy_theta[2])
             d_forward += random.gauss(0, 0.1 * abs(d_forward) + 0.01)
@@ -252,7 +256,9 @@ class ParticleFilter(Node):
         # make sure the distribution is normalized
         self.normalize_particles()
         weights = [p.w for p in self.particle_cloud]
-        sampled = draw_random_sample(self.particle_cloud, weights, self.n_particles)
+        n_random = int(0.05 * self.n_particles)         # 5% randomness particles
+        n_resample = self.n_particles-n_random
+        sampled = draw_random_sample(self.particle_cloud, weights, n_resample)
 
         # Create new particle objects, with a little bit of gaussian noise so there are no duplicates
         new_cloud = []
@@ -263,9 +269,28 @@ class ParticleFilter(Node):
                                       theta=p.theta + random.gauss(0, 0.02), 
                                       w=1.0))
 
+        # injecting randomness nearby the current particle
+        x_guess, y_guess, theta_guess = self.transform_helper.convert_pose_to_xy_and_theta(self.robot_pose)
+        for _ in range(n_random):
+            new_cloud.append(Particle(x=x_guess + random.gauss(0, 0.3),
+                                      y=y_guess + random.gauss(0, 0.3),
+                                      theta=y_guess + random.gauss(0, 0.3), 
+                                      w=1.0))
+
         self.particle_cloud = new_cloud
         self.normalize_particles()
         # TODO: fill out the rest of the implementation, DONE
+
+    def compute_n_eff(self):
+            """ Find the portion of particles contributing to good data """
+            weights = np.array([p.w for p in self.particle_cloud])
+            total = weights.sum()
+            if total <= 0:
+                return 0.0
+            weights = weights / total
+            n_eff = 1.0 / np.sum(weights ** 2)
+            n_eff = n_eff/len(self.particle_cloud) # normalize
+            return n_eff
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data
@@ -273,8 +298,8 @@ class ParticleFilter(Node):
             theta: the angle relative to the robot frame for each corresponding reading 
         """
         # TODO: implement this, DONE
-        sigma = 0.2 # standard deviation sensor/map error (mess with this)
-        n_beams = 20 # number of beams to use (mess with this)
+        sigma = 0.4 # standard deviation sensor/map error (mess with this)
+        n_beams = 50 # number of beams to use (mess with this)
         nan_penalty = 2.0 # distance for points that are out of the map (mess with this)
         log_weights = []
         step = max(1,len(r)//n_beams)
@@ -291,8 +316,8 @@ class ParticleFilter(Node):
                 if math.isnan(d):
                     d = nan_penalty 
                 sq_error += d*d
-            #Gaussian likelihood of all beams
-            log_weights.append(-sq_error/(2*sigma** 2))
+            #Gaussian likelihood of all beams, guard aganist log(0 errors)
+            log_weights.append(math.log(max(p.w, 1e-10))-sq_error/(2*sigma** 2))
         #Subtract max log weight to avoid rounding to 0 then exponentiate to get weights
         max_lw = max(log_weights)
         for p, lw in zip(self.particle_cloud, log_weights):
