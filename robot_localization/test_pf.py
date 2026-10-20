@@ -7,6 +7,9 @@ def make_pf(particles):
     pf = ParticleFilter.__new__(ParticleFilter)   # creates an instance without calling __init__
     pf.particle_cloud = particles
     pf.n_particles = len(particles)
+    pf.keep_fraction = 0.1
+    pf.resample_noise_xy = 0.02
+    pf.resample_noise_theta = 0.02
     return pf
 
 

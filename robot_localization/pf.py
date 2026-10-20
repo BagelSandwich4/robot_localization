@@ -22,6 +22,7 @@ from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
 from helper_functions import draw_random_sample
 
+
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
         Attributes:
@@ -79,13 +80,17 @@ class ParticleFilter(Node):
         self.odom_frame = "odom"        # the name of the odometry coordinate frame
         self.scan_topic = "scan"        # the topic where we will get laser scans from 
 
-        self.n_particles = 300          # the number of particles to use
+        self.n_particles = 1000         # the number of particles to use
 
         self.d_thresh = 0.2             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
-        self.n_eff_threshold = 0.4      # the proportion of how many particles contribute to probability distribution before resampling
+        self.n_eff_threshold = 0.5     # the proportion of how many particles contribute to probability distribution before resampling
+
+        self.keep_fraction = 0.1          # what % of best and worst particles to keep
+        self.resample_noise_xy = 0.02     # std dev noise added to resampled particles
+        self.resample_noise_theta = 0.02  # above but for theta
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -201,7 +206,8 @@ class ParticleFilter(Node):
         theta = math.atan2(sin_sum, cos_sum)
 
 
-        self.robot_pose = Particle(x=x, y=y, theta=theta).as_pose()
+        best = max(self.particle_cloud, key=lambda p: p.w)
+        self.robot_pose = best.as_pose()
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
@@ -230,6 +236,7 @@ class ParticleFilter(Node):
         # TODO: modify particles using delta, DONE
         """
         Rotate to particles pose: 
+                p.w = 1.0 / len(self.particle_cloud)
         d_forward = Δx cos θ₁ + Δy sin θ₁ and
         d_lateral = -Δx sin θ₁ + Δy cos θ₁
         x becomes x + d_forward cos θ - d_lateral sin θ
@@ -253,33 +260,29 @@ class ParticleFilter(Node):
             particle is selected in the resampling step.  You may want to make use of the given helper
             function draw_random_sample in helper_functions.py.
         """
-        # make sure the distribution is normalized
         self.normalize_particles()
+        n = len(self.particle_cloud)
+        n_keep = int(self.keep_fraction * n) #number of partciles we are keeping
+        n_middle = n - 2 * n_keep #number of particles to resample
+
+        ordered = sorted(self.particle_cloud, key=lambda p: p.w) #order patrticles by weight
+        worst = ordered[:n_keep] #first n_keep particles are the worst
+        best = ordered[n - n_keep:] #last n_keep particles are the best
+
         weights = [p.w for p in self.particle_cloud]
-        n_random = int(0.05 * self.n_particles)         # 5% randomness particles
-        n_resample = self.n_particles-n_random
-        sampled = draw_random_sample(self.particle_cloud, weights, n_resample)
+        sampled = draw_random_sample(self.particle_cloud, weights, n_middle)
 
-        # Create new particle objects, with a little bit of gaussian noise so there are no duplicates
         new_cloud = []
+        # kept particles are copied, no noise
+        for p in worst + best:
+            new_cloud.append(Particle(x=p.x, y=p.y, theta=p.theta, w=1.0))
+        # resampled particles have noise 
         for p in sampled:
-            # small noise so no duplicates
-            new_cloud.append(Particle(x=p.x + random.gauss(0, 0.02),
-                                      y=p.y + random.gauss(0, 0.02),
-                                      theta=p.theta + random.gauss(0, 0.02), 
-                                      w=1.0))
-
-        # injecting randomness nearby the current particle
-        x_guess, y_guess, theta_guess = self.transform_helper.convert_pose_to_xy_and_theta(self.robot_pose)
-        for _ in range(n_random):
-            new_cloud.append(Particle(x=x_guess + random.gauss(0, 0.3),
-                                      y=y_guess + random.gauss(0, 0.3),
-                                      theta=y_guess + random.gauss(0, 0.3), 
-                                      w=1.0))
+            new_cloud.append(Particle(x=p.x + random.gauss(0, self.resample_noise_xy),y=p.y + random.gauss(0, self.resample_noise_xy),
+                                      theta=p.theta + random.gauss(0, self.resample_noise_theta),w=1.0))
 
         self.particle_cloud = new_cloud
         self.normalize_particles()
-        # TODO: fill out the rest of the implementation, DONE
 
     def compute_n_eff(self):
             """ Find the portion of particles contributing to good data """
@@ -316,8 +319,8 @@ class ParticleFilter(Node):
                 if math.isnan(d):
                     d = nan_penalty 
                 sq_error += d*d
-            #Gaussian likelihood of all beams, guard aganist log(0 errors)
-            log_weights.append(math.log(max(p.w, 1e-10))-sq_error/(2*sigma** 2))
+            temper = 0.5  # below 1 flattens the weights further
+            log_weights.append(-temper * sq_error / (2 * sigma ** 2))
         #Subtract max log weight to avoid rounding to 0 then exponentiate to get weights
         max_lw = max(log_weights)
         for p, lw in zip(self.particle_cloud, log_weights):
@@ -336,16 +339,17 @@ class ParticleFilter(Node):
             Arguments
             xy_theta: a triple consisting of the mean x, y, and theta (yaw) to initialize the
                       particle cloud around.  If this input is omitted, the odometry will be used """
-        if xy_theta is None:
-            xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         self.particle_cloud = []
-        # TODO create particles, DONE
-        for _ in range(self.n_particles): 
-            randomParticle = Particle(x=random.gauss(xy_theta[0], 0.1), 
-                                      y=random.gauss(xy_theta[1], 0.1), 
-                                      theta=random.gauss(xy_theta[2], 0.2 ), 
-                                      w=1)
-            self.particle_cloud.append(randomParticle)
+        if xy_theta is None:
+            (x_min, x_max), (y_min, y_max) = self.occupancy_field.get_obstacle_bounding_box()
+            for _ in range(self.n_particles):
+                self.particle_cloud.append(Particle(x=random.uniform(x_min, x_max),y=random.uniform(y_min, y_max),
+                                                theta=random.uniform(-math.pi, math.pi),w=1))
+        else:
+            for _ in range(self.n_particles):
+                randomParticle = Particle(x=random.gauss(xy_theta[0], 0.5), y=random.gauss(xy_theta[1], 0.1), 
+                                          theta=random.gauss(xy_theta[2], 0.5 ), w=1)
+                self.particle_cloud.append(randomParticle)
 
         self.normalize_particles()
         self.update_robot_pose()
