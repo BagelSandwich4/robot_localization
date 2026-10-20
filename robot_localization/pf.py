@@ -346,7 +346,7 @@ class ParticleFilter(Node):
                                                 theta=random.uniform(-math.pi, math.pi),w=1))
         else:
             for _ in range(self.n_particles):
-                randomParticle = Particle(x=random.gauss(xy_theta[0], 0.5), y=random.gauss(xy_theta[1], 0.1), 
+                randomParticle = Particle(x=random.gauss(xy_theta[0], 0.5), y=random.gauss(xy_theta[1], 0.5), 
                                           theta=random.gauss(xy_theta[2], 0.5 ), w=1)
                 self.particle_cloud.append(randomParticle)
 
