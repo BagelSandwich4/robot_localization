@@ -206,8 +206,7 @@ class ParticleFilter(Node):
         theta = math.atan2(sin_sum, cos_sum)
 
 
-        best = max(self.particle_cloud, key=lambda p: p.w)
-        self.robot_pose = best.as_pose()
+        self.robot_pose = Particle(x=x, y=y, theta=theta).as_pose()
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
