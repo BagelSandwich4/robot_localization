@@ -86,11 +86,9 @@ class ParticleFilter(Node):
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
         # TODO: define additional constants if needed
-        self.n_eff_threshold = 0.5     # the proportion of how many particles contribute to probability distribution before resampling
-
-        self.keep_fraction = 0.1          # what % of best and worst particles to keep
-        self.resample_noise_xy = 0.02     # std dev noise added to resampled particles
-        self.resample_noise_theta = 0.02  # above but for theta
+        self.n_eff_threshold = 0.4     # the proportion of how many particles contribute to probability distribution before resampling
+        self.resample_noise_xy = 0.2     # jitter on 
+        self.resample_noise_theta = 0.02  # jitter on
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -260,25 +258,32 @@ class ParticleFilter(Node):
             function draw_random_sample in helper_functions.py.
         """
         self.normalize_particles()
-        n = len(self.particle_cloud)
-        n_keep = int(self.keep_fraction * n) #number of partciles we are keeping
-        n_middle = n - 2 * n_keep #number of particles to resample
-
-        ordered = sorted(self.particle_cloud, key=lambda p: p.w) #order patrticles by weight
-        worst = ordered[:n_keep] #first n_keep particles are the worst
-        best = ordered[n - n_keep:] #last n_keep particles are the best
-
+        n = self.n_particles
+        n_inject = int(0.2 * n)            # 20% fresh particles
+        n_global = n_inject // 2            # 10% anywhere on the map, for kidnapping and bad starts
+        n_local = n_inject - n_global       # 10% around the current estimate
+        
         weights = [p.w for p in self.particle_cloud]
-        sampled = draw_random_sample(self.particle_cloud, weights, n_middle)
-
         new_cloud = []
-        # kept particles are copied, no noise
-        for p in worst + best:
-            new_cloud.append(Particle(x=p.x, y=p.y, theta=p.theta, w=1.0))
-        # resampled particles have noise 
-        for p in sampled:
-            new_cloud.append(Particle(x=p.x + random.gauss(0, self.resample_noise_xy),y=p.y + random.gauss(0, self.resample_noise_xy),
-                                      theta=p.theta + random.gauss(0, self.resample_noise_theta),w=1.0))
+        for p in draw_random_sample(self.particle_cloud, weights, n - n_inject):
+            new_cloud.append(Particle(x=p.x + random.gauss(0, self.resample_noise_xy),
+                                    y=p.y + random.gauss(0, self.resample_noise_xy),
+                                    theta=p.theta + random.gauss(0, self.resample_noise_theta),
+                                    w=1.0))
+        est_x, est_y = self.robot_pose.position.x, self.robot_pose.position.y
+        for _ in range(n_local):
+            new_cloud.append(Particle(x=random.gauss(est_x, 0.3),
+                                    y=random.gauss(est_y, 0.3),
+                                    theta=random.uniform(-math.pi, math.pi),
+                                    w=1.0))
+        (x_min, x_max), (y_min, y_max) = self.occupancy_field.get_obstacle_bounding_box()
+        for _ in range(n_global):
+            new_cloud.append(Particle(x=random.uniform(x_min, x_max),
+                                    y=random.uniform(y_min, y_max),
+                                    theta=random.uniform(-math.pi, math.pi),
+                                    w=1.0))
+
+
 
         self.particle_cloud = new_cloud
         self.normalize_particles()
@@ -301,7 +306,7 @@ class ParticleFilter(Node):
         """
         # TODO: implement this, DONE
         sigma = 0.4 # standard deviation sensor/map error (mess with this)
-        n_beams = 50 # number of beams to use (mess with this)
+        n_beams = 40 # number of beams to use (mess with this)
         nan_penalty = 2.0 # distance for points that are out of the map (mess with this)
         log_weights = []
         step = max(1,len(r)//n_beams)
@@ -319,7 +324,7 @@ class ParticleFilter(Node):
                     d = nan_penalty 
                 sq_error += d*d
             temper = 0.5  # below 1 flattens the weights further
-            log_weights.append(-temper * sq_error / (2 * sigma ** 2))
+            log_weights.append(math.log(max(p.w, 1e-10)) - temper * sq_error / (2 * sigma ** 2))
         #Subtract max log weight to avoid rounding to 0 then exponentiate to get weights
         max_lw = max(log_weights)
         for p, lw in zip(self.particle_cloud, log_weights):

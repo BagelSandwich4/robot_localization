@@ -73,5 +73,3 @@ def test_odom_updates_reference_pose():
     pf = make_odom_pf([Particle()], old_odom=(0, 0, 0), new_odom=(1, 2, 0.3)) #robot moves to 1,2 with a heading of 0.3 rad
     pf.update_particles_with_odom()
     assert pf.current_odom_xy_theta == [1, 2, 0.3] # checks that the new odom pose is where the robot moved
-
-
