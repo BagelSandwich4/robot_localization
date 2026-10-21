@@ -1,5 +1,7 @@
 import math
+import random
 from unittest.mock import MagicMock
+import numpy as np
 from pf import ParticleFilter, Particle 
 
 
@@ -7,7 +9,6 @@ def make_pf(particles):
     pf = ParticleFilter.__new__(ParticleFilter)   # creates an instance without calling __init__
     pf.particle_cloud = particles
     pf.n_particles = len(particles)
-    pf.keep_fraction = 0.1
     pf.resample_noise_xy = 0.02
     pf.resample_noise_theta = 0.02
     return pf
@@ -27,10 +28,18 @@ def test_normalize_all_zero_weights():
     assert all(abs(p.w - 0.25) < 0.05 for p in pf.particle_cloud)
 
 def test_resample():
+    random.seed(0)                                             # fixed seeds so the test gives the same result every run
+    np.random.seed(0)                                          # draw_random_sample uses numpy's random generator
     good = Particle(x=5, y=5, w=0.99)
     pf = make_pf([good] + [Particle(x=0, y=0, w=0.0001) for _ in range(9)])
+    pf.robot_pose = Particle(x=5, y=5).as_pose()               # local injection is centered on the current estimate
+    pf.occupancy_field = MagicMock()                           # fake map so we do not need ROS for the global injection
+    pf.occupancy_field.get_obstacle_bounding_box.return_value = ((20, 30), (20, 30)) # map area far from the other particles
     pf.resample_particles()
     assert len(pf.particle_cloud) == 10
+    assert abs(sum(p.w for p in pf.particle_cloud) - 1.0) < 1e-9 # checks that the new cloud is normalized
+    in_map_box = sum(1 for p in pf.particle_cloud if 20 <= p.x <= 30 and 20 <= p.y <= 30)
+    assert in_map_box == 1                                     # 20% of 10 particles are injected, half of them across the map
     assert good not in pf.particle_cloud                       # checks that the very good particle from the beggining was not just copied
     assert len({id(p) for p in pf.particle_cloud}) == 10       # checks that all paticles are unique
     near_good = sum(1 for p in pf.particle_cloud if abs(p.x - 5) < 0.5) # counts how many particles are close to the good particle 
@@ -43,19 +52,22 @@ def make_odom_pf(particles, old_odom, new_odom):
     pf.transform_helper.angle_diff.side_effect = lambda a, b: a - b # subtracts the two angles to get the difference, so we do not need to use the ROS function in this test
     pf.odom_pose = object() # creates a dummy object to represent the odom pose, since we do not need to use it in this test
     pf.current_odom_xy_theta = list(old_odom) # sets the current odom pose to the old odom pose
+    pf.odom_noise_scale = 0.0 # turns off the odom noise so the tests check the motion math exactly
+    pf.odom_noise_floor_xy = 0.0
+    pf.odom_noise_floor_theta = 0.0
     return pf
 
 
 def test_forward_motion_follows_heading():
     # checks that the odometry update moves particles in the direction they are facing, not the direction the robot is facing
-    # robot faces in positive x direction in odom and drives 1 m forward.
-    # tests particle facing +y will move 1 m in +y, not +x.
-    # tolerances need to be large because of noise in the odom update
+    # robot faces in positive x direction in odom and drives 5 m forward.
+    # tests particle facing +y will move 5 m in +y, not +x.
+    # odom noise is turned off in make_odom_pf, so the tolerances only cover rounding
     p = Particle(x=0, y=0, theta=math.pi / 2) # makes a partcile facing +y
-    pf = make_odom_pf([p], old_odom=(0, 0, 0), new_odom=(5, 0, 0)) # robot moves 1 m forward in +x
+    pf = make_odom_pf([p], old_odom=(0, 0, 0), new_odom=(5, 0, 0)) # robot moves 5 m forward in +x
     pf.update_particles_with_odom()
     assert abs(p.x - 0) < 0.1 # checks that x still is 0
-    assert abs(p.y - 5) < 0.1 # checks that y is now 1 
+    assert abs(p.y - 5) < 0.1 # checks that y is now 5
 
 
 def test_odom_rotation():
